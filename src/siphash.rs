@@ -34,6 +34,9 @@ use blake2::digest::core_api::{BlockSizeUser, UpdateCore, VariableOutputCore};
 use blake2::Blake2bVarCore;
 use std::fmt::{self, Debug};
 
+#[cfg(target_feature = "avx512f")]
+use std::arch::x86_64::*;
+
 /// Internal state of one SipHash instance
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct SipState {
@@ -127,6 +130,7 @@ impl SipState {
     /// One `SipRound` as defined in the SipHash paper
     ///
     /// Modifies the `SipState` in-place.
+    #[cfg(not(target_feature = "avx512f"))]
     #[inline(always)]
     pub(crate) fn sip_round(&mut self) {
         self.v0 = self.v0.wrapping_add(self.v1);
@@ -144,6 +148,42 @@ impl SipState {
         self.v1 ^= self.v2;
         self.v3 ^= self.v0;
         self.v2 = self.v2.rotate_left(32);
+    }
+
+    #[cfg(target_feature = "avx512f")]
+    #[inline(always)]
+    pub(crate) fn sip_round(&mut self) {
+        unsafe {
+            // Load state variables into AVX-512 registers
+            let mut v0 = _mm512_set1_epi64(self.v0 as i64);
+            let mut v1 = _mm512_set1_epi64(self.v1 as i64);
+            let mut v2 = _mm512_set1_epi64(self.v2 as i64);
+            let mut v3 = _mm512_set1_epi64(self.v3 as i64);
+
+            // Perform the first round of operations
+            v0 = _mm512_add_epi64(v0, v1);
+            v2 = _mm512_add_epi64(v2, v3);
+            v1 = _mm512_rol_epi64(v1, 13);
+            v3 = _mm512_rol_epi64(v3, 16);
+            v1 = _mm512_xor_si512(v1, v0);
+            v3 = _mm512_xor_si512(v3, v2);
+            v0 = _mm512_rol_epi64(v0, 32);
+
+            // Perform the second round of operations
+            v2 = _mm512_add_epi64(v2, v1);
+            v0 = _mm512_add_epi64(v0, v3);
+            v1 = _mm512_rol_epi64(v1, 17);
+            v3 = _mm512_rol_epi64(v3, 21);
+            v1 = _mm512_xor_si512(v1, v2);
+            v3 = _mm512_xor_si512(v3, v0);
+            v2 = _mm512_rol_epi64(v2, 32);
+
+            // Extract the results back to the original state
+            self.v0 = _mm512_extract_epi64(v0, 0) as u64;
+            self.v1 = _mm512_extract_epi64(v1, 0) as u64;
+            self.v2 = _mm512_extract_epi64(v2, 0) as u64;
+            self.v3 = _mm512_extract_epi64(v3, 0) as u64;
+        }
     }
 }
 
